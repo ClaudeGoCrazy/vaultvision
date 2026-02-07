@@ -2,10 +2,11 @@
 VaultVision ML Pipeline - Main Orchestrator
 Entry point: process_video(video_path, video_id) -> PipelineResult
 
-Performance optimizations:
-- Model caching (singleton) — no reload between videos
-- Memory-efficient frame processing with cleanup
-- Lazy ChromaDB initialization
+Full pipeline with:
+- Frame extraction -> Detection + Tracking -> Events + Anomalies
+- Heatmap, Trajectories, Time-series, Thumbnails, Summary
+- ChromaDB indexing for NL search
+- Model caching and frame cleanup
 """
 import sys
 import time
@@ -29,6 +30,10 @@ from ml.pipeline.tracker import MultiObjectTracker
 from ml.pipeline.event_generator import generate_events
 from ml.analytics.anomaly import Zone
 from ml.analytics.heatmap import generate_heatmap
+from ml.analytics.trajectories import generate_trajectories
+from ml.analytics.timeseries import generate_timeseries
+from ml.analytics.thumbnails import extract_event_thumbnails, extract_video_thumbnail
+from ml.analytics.summary import generate_summary
 from ml.search.query_engine import QueryEngine
 from ml.config import DEFAULT_FPS, MAX_FRAMES_PER_VIDEO
 
@@ -52,22 +57,14 @@ def process_video(
     video_filename: str = "",
     zones: list[Zone] | None = None,
     cleanup_frames: bool = True,
+    extract_thumbnails: bool = True,
     progress_callback=None,
 ) -> PipelineResult:
     """
     Full ML pipeline for processing a single video.
 
-    Args:
-        video_path: Path to the video file on disk
-        video_id: Unique ID assigned by the backend
-        fps: Frames per second to extract (default 2fps)
-        video_filename: Original filename (for search indexing)
-        zones: Optional list of Zone objects for zone-based anomaly detection
-        cleanup_frames: If True, delete extracted frames after processing to save disk
-        progress_callback: Optional callable(progress_pct: float, step: str, message: str)
-
-    Returns:
-        PipelineResult matching shared/schemas.py contract
+    Returns PipelineResult with extended metadata containing:
+    - trajectories, timeseries, thumbnails, summary
     """
     start_time = time.time()
 
@@ -85,34 +82,31 @@ def process_video(
         video_path=video_path,
         video_id=video_id,
         fps=fps,
-        progress_callback=lambda pct, msg: _progress(pct * 0.15, "frame_extraction", msg),
+        progress_callback=lambda pct, msg: _progress(pct * 0.10, "frame_extraction", msg),
     )
 
-    # Safety cap for extremely long videos
     frame_paths = extraction.frame_paths[:MAX_FRAMES_PER_VIDEO]
     frame_timestamps = extraction.frame_timestamps[:MAX_FRAMES_PER_VIDEO]
     if len(extraction.frame_paths) > MAX_FRAMES_PER_VIDEO:
-        logger.warning(
-            f"Video has {len(extraction.frame_paths)} frames, capped at {MAX_FRAMES_PER_VIDEO}"
-        )
+        logger.warning(f"Capped at {MAX_FRAMES_PER_VIDEO} frames")
 
-    _progress(15, "detection", "Starting object detection & tracking...")
+    _progress(10, "detection", "Starting object detection & tracking...")
 
     # =========================================
-    # Stage 2: Detection + Tracking (cached model)
+    # Stage 2: Detection + Tracking
     # =========================================
     tracker = MultiObjectTracker()
     tracked_detections, track_summaries = tracker.track_video(
         video_path=video_path,
         frame_paths=frame_paths,
         frame_timestamps=frame_timestamps,
-        progress_callback=lambda pct, msg: _progress(15 + pct * 0.45, "tracking", msg),
+        progress_callback=lambda pct, msg: _progress(10 + pct * 0.35, "tracking", msg),
     )
 
-    _progress(60, "events", "Generating events & anomaly detection...")
+    _progress(45, "events", "Generating events & anomaly detection...")
 
     # =========================================
-    # Stage 3: Event Generation + Anomaly Detection
+    # Stage 3: Events + Anomaly Detection
     # =========================================
     raw_events = generate_events(
         tracked_detections=tracked_detections,
@@ -122,10 +116,10 @@ def process_video(
         zones=zones,
     )
 
-    _progress(70, "heatmap", "Generating heatmap...")
+    _progress(55, "heatmap", "Generating heatmap...")
 
     # =========================================
-    # Stage 4: Heatmap Generation
+    # Stage 4: Heatmap
     # =========================================
     heatmap_data = generate_heatmap(
         detections=tracked_detections,
@@ -133,10 +127,53 @@ def process_video(
         video_height=extraction.metadata.height,
     )
 
-    _progress(80, "indexing", "Indexing events for search...")
+    _progress(60, "trajectories", "Computing trajectories & speed...")
 
     # =========================================
-    # Stage 5: ChromaDB Indexing (lazy singleton)
+    # Stage 5: Trajectories + Speed/Direction
+    # =========================================
+    trajectory_data = generate_trajectories(
+        tracked_detections=tracked_detections,
+        track_summaries=track_summaries,
+        video_width=extraction.metadata.width,
+        video_height=extraction.metadata.height,
+        fps_processed=fps,
+    )
+
+    _progress(65, "timeseries", "Building time-series analytics...")
+
+    # =========================================
+    # Stage 6: Time-Series Analytics
+    # =========================================
+    timeseries_data = generate_timeseries(
+        tracked_detections=tracked_detections,
+        video_duration_sec=extraction.metadata.duration_sec,
+    )
+
+    _progress(70, "thumbnails", "Extracting event thumbnails...")
+
+    # =========================================
+    # Stage 7: Thumbnails
+    # =========================================
+    thumbnail_map = {}
+    video_thumbnail = None
+    if extract_thumbnails:
+        try:
+            thumbnail_map = extract_event_thumbnails(
+                video_path=video_path,
+                video_id=video_id,
+                events=raw_events,
+                tracked_detections=tracked_detections,
+                max_thumbnails=30,
+            )
+            video_thumbnail = extract_video_thumbnail(video_path, video_id)
+        except Exception as e:
+            logger.warning(f"Thumbnail extraction failed (non-fatal): {e}")
+
+    _progress(78, "indexing", "Indexing events for search...")
+
+    # =========================================
+    # Stage 8: ChromaDB Indexing
     # =========================================
     try:
         query_engine = _get_query_engine()
@@ -148,10 +185,10 @@ def process_video(
     except Exception as e:
         logger.warning(f"ChromaDB indexing failed (non-fatal): {e}")
 
-    _progress(90, "packaging", "Packaging results...")
+    _progress(85, "summary", "Generating activity summary...")
 
     # =========================================
-    # Stage 6: Build PipelineResult
+    # Stage 9: Counts + Activity Summary
     # =========================================
     class_counts = Counter()
     unique_person_tracks = set()
@@ -166,6 +203,21 @@ def process_video(
             elif det["class_name"] in vehicle_classes:
                 unique_vehicle_tracks.add(det["track_id"])
 
+    activity_summary = generate_summary(
+        events=raw_events,
+        track_summaries=track_summaries,
+        class_counts=dict(class_counts),
+        video_duration_sec=extraction.metadata.duration_sec,
+        unique_persons=len(unique_person_tracks),
+        unique_vehicles=len(unique_vehicle_tracks),
+        video_filename=video_filename,
+    )
+
+    _progress(90, "packaging", "Packaging results...")
+
+    # =========================================
+    # Stage 10: Build PipelineResult
+    # =========================================
     schema_detections = [
         Detection(
             detection_id=det["detection_id"],
@@ -178,6 +230,15 @@ def process_video(
         )
         for det in tracked_detections
     ]
+
+    # Inject thumbnail paths into event metadata
+    for evt in raw_events:
+        eid = evt["event_id"]
+        if eid in thumbnail_map:
+            evt.setdefault("metadata", {})["thumbnail_path"] = thumbnail_map[eid]
+        crop_key = f"{eid}_crop"
+        if crop_key in thumbnail_map:
+            evt.setdefault("metadata", {})["thumbnail_crop_path"] = thumbnail_map[crop_key]
 
     schema_events = [
         Event(
@@ -195,7 +256,6 @@ def process_video(
     ]
 
     schema_heatmap = HeatmapData(**heatmap_data)
-
     processing_time = time.time() - start_time
 
     result = PipelineResult(
@@ -212,7 +272,25 @@ def process_video(
     )
 
     # =========================================
-    # Cleanup: Remove extracted frames to save disk
+    # Extended metadata (not in shared schema, but useful for backend/frontend)
+    # Store as a separate attribute — backend can access via result.extended
+    # =========================================
+    result._extended = {
+        "trajectories": trajectory_data,
+        "timeseries": timeseries_data,
+        "activity_summary": activity_summary,
+        "video_thumbnail": video_thumbnail,
+        "thumbnail_map": thumbnail_map,
+        "video_metadata": {
+            "width": extraction.metadata.width,
+            "height": extraction.metadata.height,
+            "original_fps": extraction.metadata.original_fps,
+            "duration_sec": extraction.metadata.duration_sec,
+        },
+    }
+
+    # =========================================
+    # Cleanup
     # =========================================
     if cleanup_frames:
         try:
@@ -229,7 +307,13 @@ def process_video(
         f"{len(schema_events)} events, "
         f"{len(unique_person_tracks)} unique persons, "
         f"{len(unique_vehicle_tracks)} unique vehicles, "
+        f"{trajectory_data['summary']['total_tracks']} trajectories, "
         f"processed in {processing_time:.2f}s"
     )
 
     return result
+
+
+def get_extended_results(result: PipelineResult) -> dict | None:
+    """Access the extended metadata from a PipelineResult."""
+    return getattr(result, "_extended", None)
