@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# ML model weights (large binaries, auto-downloaded)
+*.pt
+*.onnx
+*.engine
+
+# ML pipeline data (generated at runtime)
+ml/data/uploads/
+ml/data/frames/
+ml/data/outputs/
+ml/data/chromadb/
+
+# Backend data
+backend/data/
+backend/uploads/
+
+# Environment files
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Node (frontend has its own .gitignore too)
+node_modules/
+
+# Claude Code local settings
+.claude/
