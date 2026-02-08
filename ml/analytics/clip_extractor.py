@@ -57,9 +57,11 @@ def extract_event_clip(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     video_duration = total_frames / video_fps
 
-    # Calculate clip boundaries
-    start_sec = max(0, event["start_time_sec"] - padding_before_sec)
-    end_sec = min(video_duration, event["end_time_sec"] + padding_after_sec)
+    # Calculate clip boundaries (handle None end times)
+    event_start = event.get("start_time_sec") or 0
+    event_end = event.get("end_time_sec") or event_start
+    start_sec = max(0, event_start - padding_before_sec)
+    end_sec = min(video_duration, event_end + padding_after_sec)
 
     # Cap duration
     if end_sec - start_sec > max_duration_sec:
@@ -255,7 +257,8 @@ def generate_highlight_reel(
 
     frames_written = 0
     for event in sorted_events:
-        start_sec = max(0, event["start_time_sec"] - 1.0)
+        evt_start = event.get("start_time_sec") or 0
+        start_sec = max(0, evt_start - 1.0)
         end_sec = min(video_duration, start_sec + clip_duration_sec)
 
         start_frame = int(start_sec * video_fps)
