@@ -75,3 +75,30 @@ OBJECT_LEFT_CLASSES = {"backpack", "suitcase", "handbag"}
 
 # Loitering spatial threshold (fraction of frame diagonal)
 LOITERING_SPATIAL_THRESH = 0.15  # object must stay within 15% of frame diagonal
+
+# Tripwire Detection
+TRIPWIRE_ENABLED = os.getenv("VAULTVISION_TRIPWIRE_ENABLED", "true").lower() == "true"
+
+# Re-Identification
+REID_SIMILARITY_THRESHOLD = float(os.getenv("VAULTVISION_REID_THRESH", "0.75"))
+REID_MAX_GALLERY_PER_ID = int(os.getenv("VAULTVISION_REID_GALLERY", "5"))
+
+# Safety Detection (Smoke & Fire)
+FIRE_PIXEL_THRESHOLD = float(os.getenv("VAULTVISION_FIRE_THRESH", "0.005"))
+SMOKE_PIXEL_THRESHOLD = float(os.getenv("VAULTVISION_SMOKE_THRESH", "0.05"))
+SAFETY_MIN_CONSECUTIVE = int(os.getenv("VAULTVISION_SAFETY_CONSEC", "2"))
+
+# Scene Anomaly Detection
+SCENE_ANOMALY_THRESHOLD = float(os.getenv("VAULTVISION_SCENE_ANOMALY_THRESH", "0.15"))
+SCENE_BASELINE_SEC = float(os.getenv("VAULTVISION_SCENE_BASELINE_SEC", "10.0"))
+
+# Clip Extraction
+MAX_EVENT_CLIPS = int(os.getenv("VAULTVISION_MAX_CLIPS", "20"))
+CLIP_PADDING_BEFORE = float(os.getenv("VAULTVISION_CLIP_PAD_BEFORE", "2.0"))
+CLIP_PADDING_AFTER = float(os.getenv("VAULTVISION_CLIP_PAD_AFTER", "3.0"))
+
+# Dwell Time
+DWELL_MAX_SEC = float(os.getenv("VAULTVISION_DWELL_MAX_SEC", "300.0"))
+
+# Streaming
+STREAM_DEFAULT_FPS = float(os.getenv("VAULTVISION_STREAM_FPS", "2.0"))
